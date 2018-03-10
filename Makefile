@@ -1,4 +1,6 @@
 GOPATH = $(CURDIR)/gopath
+export GOPATH
+
 PREFIX = $(HOME)
 
 SRCS = main.go
