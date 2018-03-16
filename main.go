@@ -13,14 +13,16 @@ import (
 	"io"
 	"net"
 	"os"
+	"sync"
 	"time"
 )
 
 // Flags. Values in the configuration file take precedence (TODO: fix this).
 var (
-	configFile = flag.String("config_file", "lc.conf", "Path to the configuration file")
-	port       = flag.Int("port", 56700, "UDP port to listen on")
-	listenAddr = flag.String("listen_addr", "0.0.0.0", "IPv4 address to listen on for broadcasts")
+	configFile        = flag.String("config_file", "lc.conf", "Path to the configuration file")
+	port              = flag.Int("port", 56700, "UDP port to listen on")
+	listenAddr        = flag.String("listen_addr", "0.0.0.0", "IPv4 address to listen on for broadcasts")
+	gpioInitTimeoutMS = flag.Int("gpio_init_timeout_ms", 5000, "Timeout in milliseconds for GPIO initialization (letting udev set permissions, etc.)")
 )
 
 // Logger.
@@ -84,13 +86,12 @@ func writeToFile(filename, content string) error {
 	return nil
 }
 
-// initGPIO sets up a GPIO pin for use (exported, outbound) if it’s not already exported.
+// initGPIO sets up a GPIO pin for use (exported, outbound).
 func initGPIO(gpio int) error {
-	if _, err := os.Stat(fmt.Sprintf("/sys/class/gpio/gpio%d", gpio)); err == nil {
-		return nil
-	}
-	if err := writeToFile("/sys/class/gpio/export", fmt.Sprintf("%d", gpio)); err != nil {
-		return fmt.Errorf("can't export gpio %d: %v", gpio, err)
+	if _, err := os.Stat(fmt.Sprintf("/sys/class/gpio/gpio%d", gpio)); err != nil {
+		if err := writeToFile("/sys/class/gpio/export", fmt.Sprintf("%d", gpio)); err != nil {
+			return fmt.Errorf("can't export gpio %d: %v", gpio, err)
+		}
 	}
 
 	if err := writeToFile(fmt.Sprintf("/sys/class/gpio/gpio%d/direction", gpio), "out"); err != nil {
@@ -98,6 +99,54 @@ func initGPIO(gpio int) error {
 	}
 
 	return nil
+}
+
+// initGPIOs sets up the given GPIO pins, ignoring errors until timeoutMS. If any GPIO pin fails to
+// initialize after that timeout, this function terminates the program.
+func initGPIOs(gpios []int, timeoutMS int) {
+	errc := make(chan error)
+	var wg sync.WaitGroup
+	for _, g := range gpios {
+		wg.Add(1)
+		go func(gpio int) {
+			defer wg.Done()
+			err := initGPIO(gpio)
+			if err != nil {
+				timeout := time.NewTimer(time.Duration(timeoutMS) * time.Millisecond)
+				retry := time.NewTicker(100 * time.Millisecond)
+				defer retry.Stop()
+			F:
+				for {
+					select {
+					case <-timeout.C:
+						break F
+					case <-retry.C:
+						err = initGPIO(gpio)
+						if err == nil {
+							break F
+						}
+					}
+				}
+			}
+			errc <- err
+		}(g)
+	}
+
+	go func() {
+		wg.Wait()
+		close(errc)
+	}()
+
+	ok := true
+	for err := range errc {
+		if err != nil {
+			log.Error(err.Error())
+			ok = false
+		}
+	}
+	if !ok {
+		os.Exit(1)
+	}
 }
 
 // toggleGPIO sets a certain GPIO pin on or off.
@@ -118,11 +167,11 @@ func main() {
 		log.Fatalf("Can't read config %q: %v", *configFile, err)
 	}
 
+	gpios := make([]int, 0, len(bulbs))
 	for _, b := range bulbs {
-		if err := initGPIO(b.gpio); err != nil {
-			log.Warningf("Can't initialize GPIO %d for bulb %q: %v", b.gpio, b.id, err)
-		}
+		gpios = append(gpios, b.gpio)
 	}
+	initGPIOs(gpios, *gpioInitTimeoutMS)
 
 	if err := listenAndProcess(*listenAddr, *port, bulbs); err != nil {
 		log.Fatalf("Error while processing: %v", err)
@@ -134,8 +183,9 @@ func main() {
 func readConf(filename string) (map[string]*bulb, error) {
 	var c struct {
 		Flags struct {
-			Port       int
-			ListenAddr string
+			Port              int
+			ListenAddr        string
+			GPIOInitTimeoutMS int
 		}
 		Bulb map[string]*struct {
 			Name       string
@@ -190,6 +240,10 @@ func readConf(filename string) (map[string]*bulb, error) {
 
 	if c.Flags.ListenAddr != "" {
 		*listenAddr = c.Flags.ListenAddr
+	}
+
+	if c.Flags.GPIOInitTimeoutMS != 0 {
+		*gpioInitTimeoutMS = c.Flags.GPIOInitTimeoutMS
 	}
 
 	return ret, nil
