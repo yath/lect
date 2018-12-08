@@ -86,31 +86,16 @@ func writeToFile(filename, content string) error {
 	return nil
 }
 
-// initGPIO sets up a GPIO pin for use (exported, outbound).
-func initGPIO(gpio int) error {
-	if _, err := os.Stat(fmt.Sprintf("/sys/class/gpio/gpio%d", gpio)); err != nil {
-		if err := writeToFile("/sys/class/gpio/export", fmt.Sprintf("%d", gpio)); err != nil {
-			return fmt.Errorf("can't export gpio %d: %v", gpio, err)
-		}
-	}
-
-	if err := writeToFile(fmt.Sprintf("/sys/class/gpio/gpio%d/direction", gpio), "out"); err != nil {
-		return fmt.Errorf("can't set gpio %d's direction to out: %v", gpio, err)
-	}
-
-	return nil
-}
-
 // initGPIOs sets up the given GPIO pins, ignoring errors until timeoutMS. If any GPIO pin fails to
 // initialize after that timeout, this function terminates the program.
-func initGPIOs(gpios []int, timeoutMS int) {
+func initGPIOs(gpios []gpio, timeoutMS int) {
 	errc := make(chan error)
 	var wg sync.WaitGroup
 	for _, g := range gpios {
 		wg.Add(1)
-		go func(gpio int) {
+		go func(g gpio) {
 			defer wg.Done()
-			err := initGPIO(gpio)
+			err := g.init()
 			if err != nil {
 				timeout := time.NewTimer(time.Duration(timeoutMS) * time.Millisecond)
 				retry := time.NewTicker(100 * time.Millisecond)
@@ -121,7 +106,7 @@ func initGPIOs(gpios []int, timeoutMS int) {
 					case <-timeout.C:
 						break F
 					case <-retry.C:
-						err = initGPIO(gpio)
+						err = g.init()
 						if err == nil {
 							break F
 						}
@@ -149,13 +134,42 @@ func initGPIOs(gpios []int, timeoutMS int) {
 	}
 }
 
-// toggleGPIO sets a certain GPIO pin on or off.
-func toggleGPIO(gpio int, on bool) error {
+// gpio is a gpio port that may optionally be active low.
+type gpio struct {
+	port      int
+	activeLow bool
+}
+
+// init sets up a GPIO pin for use (exported, outbound). If and only if g.activeLow is true,
+// the GPIO’s active_low value will be set to 1. In any case, if initialization is successful,
+// set(false) is called.
+func (g *gpio) init() error {
+	if _, err := os.Stat(fmt.Sprintf("/sys/class/gpio/gpio%d", g.port)); err != nil {
+		if err := writeToFile("/sys/class/gpio/export", fmt.Sprintf("%d", g.port)); err != nil {
+			return fmt.Errorf("can't export gpio %d: %v", g.port, err)
+		}
+	}
+
+	if err := writeToFile(fmt.Sprintf("/sys/class/gpio/gpio%d/direction", g.port), "out"); err != nil {
+		return fmt.Errorf("can't set gpio %d's direction to out: %v", g.port, err)
+	}
+
+	if g.activeLow {
+		if err := writeToFile(fmt.Sprintf("/sys/class/gpio/gpio%d/active_low", g.port), "1"); err != nil {
+			return fmt.Errorf("can't set gpio %d to active_low: %v", g.port, err)
+		}
+	}
+
+	return g.set(false)
+}
+
+// set sets g on or off.
+func (g *gpio) set(on bool) error {
 	val := "0"
 	if on {
 		val = "1"
 	}
-	return writeToFile(fmt.Sprintf("/sys/class/gpio/gpio%d/value", gpio), val)
+	return writeToFile(fmt.Sprintf("/sys/class/gpio/gpio%d/value", g.port), val)
 }
 
 // main parses flags, reads the config, initializes GPIOs and then runs the listenAndProcess main loop.
@@ -167,9 +181,9 @@ func main() {
 		log.Fatalf("Can't read config %q: %v", *configFile, err)
 	}
 
-	gpios := make([]int, 0, len(bulbs))
+	gpios := make([]gpio, 0, len(bulbs))
 	for _, b := range bulbs {
-		gpios = append(gpios, b.gpio)
+		gpios = append(gpios, b.g)
 	}
 	initGPIOs(gpios, *gpioInitTimeoutMS)
 
@@ -192,6 +206,7 @@ func readConf(filename string) (map[string]*bulb, error) {
 			IPAddress  string
 			MACAddress string
 			GPIO       int
+			ActiveLow  bool
 		}
 	}
 	if err := gcfg.ReadFileInto(&c, filename); err != nil {
@@ -229,7 +244,7 @@ func readConf(filename string) (map[string]*bulb, error) {
 			name:   info.Name,
 			addr:   addr,
 			hwaddr: hwaddrInt,
-			gpio:   info.GPIO,
+			g:      gpio{port: info.GPIO, activeLow: info.ActiveLow},
 			s:      newBulbState(info.Name),
 		}
 	}
@@ -255,7 +270,7 @@ type bulb struct {
 	name   string     // Name to announce
 	addr   net.IP     // IP address
 	hwaddr uint64     // 48-bit MAC address
-	gpio   int        // GPIO number to toggle
+	g      gpio       // GPIO to toggle
 	s      *bulbState // Bulb state
 }
 
@@ -334,8 +349,8 @@ func (b *bulb) process(pc *ipv4.PacketConn, src net.Addr, data []byte) error {
 
 	if msg.Header.ProtocolHeader.Type == controlifx.LightSetPowerType {
 		on := msg.Payload.(*implifx.LightSetPowerLanMessage).Level == 0xffff
-		if err := toggleGPIO(b.gpio, on); err != nil {
-			return fmt.Errorf("can't set gpio %d to on=%v: %v", b.gpio, on, err)
+		if err := b.g.set(on); err != nil {
+			return fmt.Errorf("can't set gpio %v to on=%v: %v", b.g, on, err)
 		}
 	}
 
