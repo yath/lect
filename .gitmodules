@@ -16,3 +16,9 @@
 [submodule "gopath/src/golang.org/x/net"]
 	path = gopath/src/golang.org/x/net
 	url = https://go.googlesource.com/net
+[submodule "gopath/go-rpio"]
+	path = gopath/go-rpio
+	url = https://github.com/stianeikeland/go-rpio
+[submodule "gopath/src/github.com/stianeikeland/go-rpio"]
+	path = gopath/src/github.com/stianeikeland/go-rpio
+	url = https://github.com/stianeikeland/go-rpio
