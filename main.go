@@ -9,10 +9,10 @@ import (
 	"time"
 
 	rpio "github.com/stianeikeland/go-rpio"
-	"github.com/yath/implifx" // Contains a bugfix for LightStateLanMessage
+	"github.com/yath/controlifx"
+	"github.com/yath/implifx"
 	"golang.org/x/net/ipv4"
 	gcfg "gopkg.in/gcfg.v1"
-	controlifx "gopkg.in/lifx-tools/controlifx.v1"
 	logging "gopkg.in/op/go-logging.v1"
 )
 
