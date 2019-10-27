@@ -11,6 +11,45 @@ import (
 	"golang.org/x/net/ipv4"
 )
 
+// listenAndProcess is the main loop that listens on the specified address and UDP port and invokes
+// each addressed bulb’s process() receiver.
+func listenAndProcessBulbs(addr string, port int, bulbs map[string]*bulb) error {
+	hp := net.JoinHostPort(addr, fmt.Sprintf("%d", port))
+	conn, err := net.ListenPacket("udp", hp)
+	if err != nil {
+		return fmt.Errorf("can't listen: %v", err)
+	}
+
+	pc := ipv4.NewPacketConn(conn)
+	pc.SetControlMessage(ipv4.FlagDst, true)
+
+	log.Infof("listening on %s", hp)
+
+	for {
+		buf := make([]byte, controlifx.MaxReadSize)
+		n, cm, saddr, err := pc.ReadFrom(buf)
+		if err != nil {
+			return fmt.Errorf("can't read: %v", err)
+		}
+		buf = buf[:n]
+
+		found := false
+		for id, b := range bulbs {
+			if net.IPv4bcast.Equal(cm.Dst) || b.addr.Equal(cm.Dst) {
+				found = true
+				if err := b.process(pc, saddr, buf); err != nil {
+					log.Errorf("error processing packet for bulb %q: %v", id, err)
+				}
+			}
+		}
+
+		if !found {
+			log.Warningf("%d bytes from %v received for %v, but is neither broadcast nor a bulb", n,
+				saddr, cm.Dst)
+		}
+	}
+}
+
 // bulb represents a single emulated bulb and its attributes. It listens on addr and responds to
 // requests to set power state and brightness, calling g.set().
 type bulb struct {
@@ -23,7 +62,7 @@ type bulb struct {
 }
 
 func (b *bulb) String() string {
-	return fmt.Sprintf("%q (%s)", b.id, b.addr)
+	return fmt.Sprintf("bulb %q (%s)", b.id, b.addr)
 }
 
 // send builds a SendableLanMessage with the specified header “lh”, the message type “t” and the

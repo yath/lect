@@ -1,4 +1,4 @@
-SRCS = main.go bulb.go
+SRCS = main.go bulb.go serial.go
 
 lect: $(SRCS) go.mod
 	go build -v -x -o $@ $(SRCS)

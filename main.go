@@ -7,8 +7,6 @@ import (
 	"net"
 
 	rpio "github.com/stianeikeland/go-rpio"
-	"github.com/yath/controlifx"
-	"golang.org/x/net/ipv4"
 	gcfg "gopkg.in/gcfg.v1"
 	logging "gopkg.in/op/go-logging.v1"
 )
@@ -22,45 +20,6 @@ var (
 
 // Logger.
 var log = logging.MustGetLogger("lect")
-
-// listenAndProcess is the main loop that listens on the specified UDP port and
-// invokes each addressed bulb’s process() receiver.
-func listenAndProcess(addr string, port int, bulbs map[string]*bulb) error {
-	hp := net.JoinHostPort(addr, fmt.Sprintf("%d", port))
-	conn, err := net.ListenPacket("udp", hp)
-	if err != nil {
-		return fmt.Errorf("can't listen: %v", err)
-	}
-
-	pc := ipv4.NewPacketConn(conn)
-	pc.SetControlMessage(ipv4.FlagDst, true)
-
-	log.Infof("listening on %s", hp)
-
-	for {
-		buf := make([]byte, controlifx.MaxReadSize)
-		n, cm, saddr, err := pc.ReadFrom(buf)
-		if err != nil {
-			return fmt.Errorf("can't read: %v", err)
-		}
-		buf = buf[:n]
-
-		found := false
-		for id, b := range bulbs {
-			if net.IPv4bcast.Equal(cm.Dst) || b.addr.Equal(cm.Dst) {
-				found = true
-				if err := b.process(pc, saddr, buf); err != nil {
-					log.Errorf("error processing packet for bulb %q: %v", id, err)
-				}
-			}
-		}
-
-		if !found {
-			log.Warningf("%d bytes from %v received for %v, but is neither broadcast nor a bulb", n,
-				saddr, cm.Dst)
-		}
-	}
-}
 
 // initGPIOs sets up the given GPIO pins. The returned cleanup function must be called at the end of
 // the program.
@@ -135,33 +94,37 @@ func (g *gpio) set(value uint16) {
 	}
 }
 
-// main parses flags, reads the config, initializes GPIOs and then runs the listenAndProcess main loop.
+// main parses flags, reads the config, initializes GPIOs and then runs the listenAndProcessBulbs
+// main loop.
 func main() {
 	flag.Parse()
 
-	bulbs, err := readConf(*configFile)
+	conf, err := readConf(*configFile)
 	if err != nil {
 		log.Fatalf("Can't read config %q: %v", *configFile, err)
 	}
 
-	gpios := make([]*gpio, 0, len(bulbs))
-	for _, b := range bulbs {
-		gpios = append(gpios, b.g)
-	}
-	cleanup, err := initGPIOs(gpios)
+	cleanup, err := initGPIOs(conf.allGPIOs)
 	if err != nil {
 		log.Fatalf("can't initialize GPIOs: %v", err)
 	}
 	defer cleanup()
 
-	if err := listenAndProcess(*listenAddr, *port, bulbs); err != nil {
+	if err := listenAndProcessBulbs(*listenAddr, *port, conf.bulbs); err != nil {
 		log.Fatalf("Error while processing: %v", err)
 	}
 }
 
+// config represents the configurations with all bulbs and serialPorts attached to a gpio.
+type config struct {
+	bulbs       map[string]*bulb
+	serialPorts map[string]*serialPort
+	allGPIOs    []*gpio
+}
+
 // readConf reads the config specified by filename and returns a map of the bulb's id
 // to *bulb. Overrides flags specified in [flags] as a side-effect.
-func readConf(filename string) (map[string]*bulb, error) {
+func readConf(filename string) (*config, error) {
 	var c struct {
 		Flags struct {
 			Port       int
@@ -175,16 +138,40 @@ func readConf(filename string) (map[string]*bulb, error) {
 			ActiveLow  bool
 			IsPWM      bool
 		}
+		Serial map[string]*struct {
+			InputFIFO string
+			BaudRate  int
+			GPIO      int
+		}
 	}
 	if err := gcfg.ReadFileInto(&c, filename); err != nil {
 		return nil, err
 	}
 
-	if len(c.Bulb) < 1 {
-		return nil, errors.New("no bulbs defined")
+	if len(c.Bulb)+len(c.Serial) == 0 {
+		return nil, errors.New("no bulb or serial port defined")
 	}
 
-	ret := make(map[string]*bulb, len(c.Bulb))
+	ret := &config{
+		bulbs:       make(map[string]*bulb, len(c.Bulb)),
+		serialPorts: make(map[string]*serialPort, len(c.Serial)),
+		allGPIOs:    make([]*gpio, 0, len(c.Bulb)+len(c.Serial)),
+	}
+
+	// Keep track of used GPIOs and store them in allGPIOs. They are all initialized at once in
+	// initGPIOs().
+	usedGPIOs := map[int]string{}
+	useGPIO := func(g *gpio, me string) error {
+		old, ok := usedGPIOs[g.port]
+		if !ok {
+			usedGPIOs[g.port] = me
+			ret.allGPIOs = append(ret.allGPIOs, g)
+			return nil
+		}
+		return fmt.Errorf("GPIO %d for %s already used by %s", g.port, me, old)
+	}
+
+	// Parse bulbs.
 	for id, info := range c.Bulb {
 		if info.Name == "" || info.IPAddress == "" || info.MACAddress == "" || info.GPIO == 0 {
 			return nil, fmt.Errorf("all of name, ipaddress, macaddress and gpio are required for bulb %q", id)
@@ -206,16 +193,38 @@ func readConf(filename string) (map[string]*bulb, error) {
 			hwaddrInt = (hwaddrInt << 8) | uint64(hwaddr[i])
 		}
 
-		ret[id] = &bulb{
+		g := &gpio{port: info.GPIO, activeLow: info.ActiveLow, isPWM: info.IsPWM}
+		if err := useGPIO(g, fmt.Sprintf("bulb %q", id)); err != nil {
+			return nil, err
+		}
+
+		ret.bulbs[id] = &bulb{
 			id:     id,
 			name:   info.Name,
 			addr:   addr,
 			hwaddr: hwaddrInt,
-			g:      &gpio{port: info.GPIO, activeLow: info.ActiveLow, isPWM: info.IsPWM},
+			g:      g,
 			s:      newBulbState(info.Name),
 		}
 	}
 
+	// Parse serial ports.
+	for id, info := range c.Serial {
+		g := &gpio{port: info.GPIO, activeLow: true /* NRZ */, isPWM: false}
+		if err := useGPIO(g, fmt.Sprintf("serial %q", id)); err != nil {
+			return nil, err
+		}
+
+		ret.serialPorts[id] = &serialPort{
+			id:        id,
+			inputFIFO: info.InputFIFO,
+			baudRate:  info.BaudRate,
+			g:         g,
+		}
+
+	}
+
+	// Global flags.
 	if c.Flags.Port != 0 {
 		*port = c.Flags.Port
 	}
