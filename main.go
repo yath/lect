@@ -22,19 +22,9 @@ var (
 // Logger.
 var log = logging.MustGetLogger("lect")
 
-// initGPIOs sets up the given GPIO pins. The returned cleanup function must be called at the end of
-// the program.
-func initGPIOs(gpios []gpio) (func(), error) {
-	if err := rpio.Open(); err != nil {
-		return nil, fmt.Errorf("can't open raspberry GPIO: %v", err)
-	}
-	for _, g := range gpios {
-		if err := g.init(); err != nil {
-			return nil, fmt.Errorf("can't initialize GPIO: %v", err)
-		}
-	}
-	return func() { rpio.Close() }, nil
-}
+// gpioMaxVal is the maximum value a GPIO can be set to and for non-PWM GPIOs is the only “on”
+// value.
+const gpioMaxVal = ^uint16(0)
 
 // gpio is a generic GPIO port that can be set to a 16-bit value.
 type gpio interface {
@@ -84,10 +74,6 @@ func (g *piGPIO) isPWM() bool {
 	return g.pwm
 }
 
-// gpioMaxVal is the maximum value a GPIO can be set to and for non-PWM GPIOs is the only “on”
-// value.
-const gpioMaxVal = ^uint16(0)
-
 // set sets g to value.
 func (g *piGPIO) set(value uint16) {
 	logPfx := fmt.Sprintf("set %v to value %d", g, value)
@@ -109,27 +95,6 @@ func (g *piGPIO) set(value uint16) {
 	}
 }
 
-// main parses flags, reads the config, initializes GPIOs and then runs the listenAndProcessBulbs
-// main loop.
-func main() {
-	flag.Parse()
-
-	conf, err := readConf(*configFile)
-	if err != nil {
-		log.Fatalf("Can't read config %q: %v", *configFile, err)
-	}
-
-	cleanup, err := initGPIOs(conf.allGPIOs)
-	if err != nil {
-		log.Fatalf("can't initialize GPIOs: %v", err)
-	}
-	defer cleanup()
-
-	if err := listenAndProcessBulbs(*listenAddr, *port, conf.bulbs); err != nil {
-		log.Fatalf("Error while processing: %v", err)
-	}
-}
-
 // config represents the configurations with all bulbs and serialPorts attached to a gpio.
 type config struct {
 	bulbs       map[string]*bulb
@@ -137,8 +102,8 @@ type config struct {
 	allGPIOs    []gpio
 }
 
-// readConf reads the config specified by filename and returns a map of the bulb's id
-// to *bulb. Overrides flags specified in [flags] as a side-effect.
+// readConf reads the config specified by filename and returns a new *config. Overrides flags
+// specified in [flags] as a side-effect.
 func readConf(filename string) (*config, error) {
 	var c struct {
 		Flags struct {
@@ -254,4 +219,39 @@ func readConf(filename string) (*config, error) {
 	}
 
 	return ret, nil
+}
+
+// initGPIOs sets up the given GPIO pins. The returned cleanup function must be called at the end of
+// the program.
+func initGPIOs(gpios []gpio) (func(), error) {
+	if err := rpio.Open(); err != nil {
+		return nil, fmt.Errorf("can't open raspberry GPIO: %v", err)
+	}
+	for _, g := range gpios {
+		if err := g.init(); err != nil {
+			return nil, fmt.Errorf("can't initialize GPIO: %v", err)
+		}
+	}
+	return func() { rpio.Close() }, nil
+}
+
+// main parses flags, reads the config, initializes GPIOs and then runs the listenAndProcessBulbs
+// main loop.
+func main() {
+	flag.Parse()
+
+	conf, err := readConf(*configFile)
+	if err != nil {
+		log.Fatalf("Can't read config %q: %v", *configFile, err)
+	}
+
+	cleanup, err := initGPIOs(conf.allGPIOs)
+	if err != nil {
+		log.Fatalf("can't initialize GPIOs: %v", err)
+	}
+	defer cleanup()
+
+	if err := listenAndProcessBulbs(*listenAddr, *port, conf.bulbs); err != nil {
+		log.Fatalf("Error while processing: %v", err)
+	}
 }
