@@ -17,6 +17,7 @@ var (
 	configFile = flag.String("config_file", "lc.conf", "Path to the configuration file")
 	port       = flag.Int("port", 56700, "UDP port to listen on")
 	listenAddr = flag.String("listen_addr", "0.0.0.0", "IPv4 address to listen on for broadcasts")
+	isPi       = flag.Bool("is_pi", true, "Assume running on a Raspberry Pi. If false, GPIOs will not be used.")
 )
 
 // Logger.
@@ -48,6 +49,10 @@ func (g *piGPIO) String() string {
 
 // init sets up a GPIO pin for use and sets its value to 0.
 func (g *piGPIO) init() error {
+	if !*isPi {
+		return nil
+	}
+
 	if g.pin != nil {
 		return fmt.Errorf("gpio %d already initialized", g.port)
 	}
@@ -77,6 +82,11 @@ func (g *piGPIO) isPWM() bool {
 // set sets g to value.
 func (g *piGPIO) set(value uint16) {
 	logPfx := fmt.Sprintf("set %v to value %d", g, value)
+	if g.pin == nil {
+		log.Warningf("gpio %v pin not initialized, not setting", g)
+		return
+	}
+
 	if g.pwm {
 		log.Infof("%s: setting dutiness %d/%d", logPfx, value, gpioMaxVal)
 		g.pin.DutyCycle(uint32(value), uint32(gpioMaxVal))
@@ -225,7 +235,11 @@ func readConf(filename string) (*config, error) {
 // the program.
 func initGPIOs(gpios []gpio) (func(), error) {
 	if err := rpio.Open(); err != nil {
-		return nil, fmt.Errorf("can't open raspberry GPIO: %v", err)
+		err = fmt.Errorf("can't open raspberry GPIO: %v", err)
+		if *isPi {
+			return nil, err
+		}
+		log.Warningf("%v (ignored)", err)
 	}
 	for _, g := range gpios {
 		if err := g.init(); err != nil {
