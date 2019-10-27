@@ -57,7 +57,7 @@ type bulb struct {
 	name   string     // Name to announce
 	addr   net.IP     // IP address
 	hwaddr uint64     // 48-bit MAC address
-	g      *gpio      // GPIO to toggle
+	g      gpio       // GPIO to toggle
 	s      *bulbState // Bulb state
 }
 
@@ -140,7 +140,7 @@ func (b *bulb) process(pc *ipv4.PacketConn, src net.Addr, data []byte) error {
 		b.g.set(p.Level)
 	}
 
-	if msg.Header.ProtocolHeader.Type == controlifx.LightSetColorType && b.g.isPWM {
+	if msg.Header.ProtocolHeader.Type == controlifx.LightSetColorType && b.g.isPWM() {
 		p := msg.Payload.(*implifx.LightSetColorLanMessage)
 		log.Infof("Handling LightSetColor %+v (HSBK: %+v)", p, p.Color)
 		b.g.set(p.Color.Brightness)

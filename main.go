@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"net"
+	"sort"
 
 	rpio "github.com/stianeikeland/go-rpio"
 	gcfg "gopkg.in/gcfg.v1"
@@ -23,7 +24,7 @@ var log = logging.MustGetLogger("lect")
 
 // initGPIOs sets up the given GPIO pins. The returned cleanup function must be called at the end of
 // the program.
-func initGPIOs(gpios []*gpio) (func(), error) {
+func initGPIOs(gpios []gpio) (func(), error) {
 	if err := rpio.Open(); err != nil {
 		return nil, fmt.Errorf("can't open raspberry GPIO: %v", err)
 	}
@@ -35,30 +36,37 @@ func initGPIOs(gpios []*gpio) (func(), error) {
 	return func() { rpio.Close() }, nil
 }
 
-// gpio is a gpio port that may optionally be active low x-or a PWM port.
-type gpio struct {
+// gpio is a generic GPIO port that can be set to a 16-bit value.
+type gpio interface {
+	init() error
+	set(value uint16)
+	isPWM() bool
+}
+
+// gpio is a Raspberry Pi hardware GPIO port that may optionally be active low x-or a PWM port.
+type piGPIO struct {
 	port      int // BCM notation, i.e. “gpio -g”.
 	activeLow bool
-	isPWM     bool
+	pwm       bool
 	pin       *rpio.Pin
 }
 
-// String implements fmt.Stringer
-func (g *gpio) String() string {
+// String implements fmt.Stringer.
+func (g *piGPIO) String() string {
 	return fmt.Sprintf("%T%#v", g, g)
 }
 
 // init sets up a GPIO pin for use and sets its value to 0.
-func (g *gpio) init() error {
+func (g *piGPIO) init() error {
 	if g.pin != nil {
 		return fmt.Errorf("gpio %d already initialized", g.port)
 	}
-	if g.activeLow && g.isPWM {
+	if g.activeLow && g.pwm {
 		return fmt.Errorf("gpio %d can't be both activeLow and PWM", g.port)
 	}
 
 	p := rpio.Pin(g.port)
-	if g.isPWM {
+	if g.pwm {
 		p.Mode(rpio.Pwm)
 		p.Freq(19200000 / 2) // to get divi=2, from bcm2835-1.58/src/bcm2835.h BCM2835_PWM_CLOCK_DIVIDER_2
 	} else {
@@ -71,16 +79,23 @@ func (g *gpio) init() error {
 	return nil
 }
 
-// set sets g to value. For non-PWM GPIOs, only max(uint16) is considered “on”.
-func (g *gpio) set(value uint16) {
-	const max = ^uint16(0)
+// isPWM returns whether g supports pulse-width modulation.
+func (g *piGPIO) isPWM() bool {
+	return g.pwm
+}
 
+// gpioMaxVal is the maximum value a GPIO can be set to and for non-PWM GPIOs is the only “on”
+// value.
+const gpioMaxVal = ^uint16(0)
+
+// set sets g to value.
+func (g *piGPIO) set(value uint16) {
 	logPfx := fmt.Sprintf("set %v to value %d", g, value)
-	if g.isPWM {
-		log.Infof("%s: setting dutiness %d/%d", logPfx, value, max)
-		g.pin.DutyCycle(uint32(value), uint32(max))
+	if g.pwm {
+		log.Infof("%s: setting dutiness %d/%d", logPfx, value, gpioMaxVal)
+		g.pin.DutyCycle(uint32(value), uint32(gpioMaxVal))
 	} else {
-		on := (value == max)
+		on := (value == gpioMaxVal)
 		if g.activeLow {
 			on = !on
 		}
@@ -119,7 +134,7 @@ func main() {
 type config struct {
 	bulbs       map[string]*bulb
 	serialPorts map[string]*serialPort
-	allGPIOs    []*gpio
+	allGPIOs    []gpio
 }
 
 // readConf reads the config specified by filename and returns a map of the bulb's id
@@ -155,13 +170,13 @@ func readConf(filename string) (*config, error) {
 	ret := &config{
 		bulbs:       make(map[string]*bulb, len(c.Bulb)),
 		serialPorts: make(map[string]*serialPort, len(c.Serial)),
-		allGPIOs:    make([]*gpio, 0, len(c.Bulb)+len(c.Serial)),
+		allGPIOs:    make([]gpio, 0, len(c.Bulb)+len(c.Serial)),
 	}
 
 	// Keep track of used GPIOs and store them in allGPIOs. They are all initialized at once in
 	// initGPIOs().
 	usedGPIOs := map[int]string{}
-	useGPIO := func(g *gpio, me string) error {
+	useGPIO := func(g *piGPIO, me string) error {
 		old, ok := usedGPIOs[g.port]
 		if !ok {
 			usedGPIOs[g.port] = me
@@ -193,7 +208,7 @@ func readConf(filename string) (*config, error) {
 			hwaddrInt = (hwaddrInt << 8) | uint64(hwaddr[i])
 		}
 
-		g := &gpio{port: info.GPIO, activeLow: info.ActiveLow, isPWM: info.IsPWM}
+		g := &piGPIO{port: info.GPIO, activeLow: info.ActiveLow, pwm: info.IsPWM}
 		if err := useGPIO(g, fmt.Sprintf("bulb %q", id)); err != nil {
 			return nil, err
 		}
@@ -210,7 +225,7 @@ func readConf(filename string) (*config, error) {
 
 	// Parse serial ports.
 	for id, info := range c.Serial {
-		g := &gpio{port: info.GPIO, activeLow: true /* NRZ */, isPWM: false}
+		g := &piGPIO{port: info.GPIO, activeLow: true /* NRZ */, pwm: false}
 		if err := useGPIO(g, fmt.Sprintf("serial %q", id)); err != nil {
 			return nil, err
 		}
@@ -223,6 +238,11 @@ func readConf(filename string) (*config, error) {
 		}
 
 	}
+
+	// For stable comparison in test.
+	sort.Slice(ret.allGPIOs, func(i, j int) bool {
+		return ret.allGPIOs[i].(*piGPIO).port < (ret.allGPIOs[j]).(*piGPIO).port
+	})
 
 	// Global flags.
 	if c.Flags.Port != 0 {

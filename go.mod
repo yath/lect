@@ -3,6 +3,7 @@ module github.com/yath/lect
 go 1.13
 
 require (
+	github.com/google/go-cmp v0.3.1
 	github.com/stianeikeland/go-rpio v4.2.0+incompatible
 	github.com/yath/controlifx v0.0.0-20191027135754-97cac356e3ba
 	github.com/yath/implifx v1.2.2
