@@ -9,6 +9,7 @@ import (
 	"sort"
 
 	rpio "github.com/stianeikeland/go-rpio"
+	"golang.org/x/sync/errgroup"
 	gcfg "gopkg.in/gcfg.v1"
 	logging "gopkg.in/op/go-logging.v1"
 )
@@ -82,14 +83,13 @@ func (g *piGPIO) isPWM() bool {
 
 // set sets g to value.
 func (g *piGPIO) set(value uint16) {
-	logPfx := fmt.Sprintf("set %v to value %d", g, value)
 	if g.pin == nil {
-		log.Warningf("gpio %v pin not initialized, not setting", g)
+		log.Warningf("gpio %v pin not initialized, not setting 0x%04x", g, value)
 		return
 	}
 
 	if g.pwm {
-		log.Infof("%s: setting dutiness %d/%d", logPfx, value, gpioMaxVal)
+		log.Infof("%v: setting dutiness %d/%d", g, value, gpioMaxVal)
 		g.pin.DutyCycle(uint32(value), uint32(gpioMaxVal))
 	} else {
 		on := (value == gpioMaxVal)
@@ -97,10 +97,8 @@ func (g *piGPIO) set(value uint16) {
 			on = !on
 		}
 		if on {
-			log.Infof("%s: setting high", logPfx)
 			g.pin.High()
 		} else {
-			log.Infof("%s: setting low", logPfx)
 			g.pin.Low()
 		}
 	}
@@ -201,7 +199,7 @@ func readConf(filename string) (*config, error) {
 
 	// Parse serial ports.
 	for id, info := range c.Serial {
-		g := &piGPIO{port: info.GPIO, activeLow: true /* NRZ */, pwm: false}
+		g := &piGPIO{port: info.GPIO, pwm: false}
 		if err := useGPIO(g, fmt.Sprintf("serial %q", id)); err != nil {
 			return nil, err
 		}
@@ -251,7 +249,7 @@ func initGPIOs(gpios []gpio) (func(), error) {
 }
 
 // main parses flags, reads the config, initializes GPIOs and then runs the listenAndProcessBulbs
-// main loop.
+// and serialPorts main loops.
 func main() {
 	ctx := context.Background()
 	flag.Parse()
@@ -265,9 +263,36 @@ func main() {
 	if err != nil {
 		log.Fatalf("can't initialize GPIOs: %v", err)
 	}
-	defer cleanup()
+	// cleanup() is called unconditionally after eg.Wait(), because the log.Fatalf would not trigger
+	// a deferred call.
 
-	if err := listenAndProcessBulbs(ctx, *listenAddr, *port, conf.bulbs); err != nil {
-		log.Fatalf("Error while processing: %v", err)
+	ignoreCanceled := func(e error) error {
+		if errors.Is(e, context.Canceled) {
+			return nil
+		}
+		return e
+	}
+
+	eg, ctx := errgroup.WithContext(ctx)
+	eg.Go(func() error {
+		if err := ignoreCanceled(listenAndProcessBulbs(ctx, *listenAddr, *port, conf.bulbs)); err != nil {
+			return fmt.Errorf("can't process bulb messages: %w", err)
+		}
+		return nil
+	})
+
+	for id, sp := range conf.serialPorts {
+		eg.Go(func() error {
+			if err := ignoreCanceled(sp.readAndProcess(ctx)); err != nil {
+				return fmt.Errorf("can't process serial port messages for %q: %w", id, err)
+			}
+			return nil
+		})
+	}
+
+	err = eg.Wait()
+	cleanup()
+	if err != nil {
+		log.Fatalf(err.Error())
 	}
 }
