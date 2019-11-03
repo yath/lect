@@ -173,7 +173,7 @@ func readConf(filename string) (*config, error) {
 		}
 		hwaddr, err := net.ParseMAC(info.MACAddress)
 		if err != nil {
-			return nil, fmt.Errorf("can't parse %q for bulb %q as a MAC address: %v", info.MACAddress, id, err)
+			return nil, fmt.Errorf("can't parse %q for bulb %q as a MAC address: %w", info.MACAddress, id, err)
 		}
 		if len(hwaddr) != 6 {
 			return nil, fmt.Errorf("MAC address %q for bulb %q has not exactly 48 bits", hwaddr, id)
@@ -236,7 +236,7 @@ func readConf(filename string) (*config, error) {
 // the program.
 func initGPIOs(gpios []gpio) (func(), error) {
 	if err := rpio.Open(); err != nil {
-		err = fmt.Errorf("can't open raspberry GPIO: %v", err)
+		err = fmt.Errorf("can't open raspberry GPIO: %w", err)
 		if *isPi {
 			return nil, err
 		}
@@ -244,7 +244,7 @@ func initGPIOs(gpios []gpio) (func(), error) {
 	}
 	for _, g := range gpios {
 		if err := g.init(); err != nil {
-			return nil, fmt.Errorf("can't initialize GPIO: %v", err)
+			return nil, fmt.Errorf("can't initialize GPIO: %w", err)
 		}
 	}
 	return func() { rpio.Close() }, nil

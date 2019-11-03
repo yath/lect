@@ -47,8 +47,8 @@ retry:
 		return "", nil, fmt.Errorf("can't listen (tried %d times): %w", listenTries, err)
 
 	case <-time.After(500 * time.Millisecond):
-               // listenAndProcessBulbs does not signal when it’s ready, so assume that after 500ms without
-               // any error it is actually serving.
+		// listenAndProcessBulbs does not signal when it’s ready, so assume that after 500ms without
+		// any error it is actually serving.
 	}
 
 	return net.JoinHostPort(localhostAddr, fmt.Sprintf("%d", port)), cancel, nil
@@ -77,9 +77,9 @@ func (g *testGPIO) isPWM() bool {
 // TestListenAndProcessBulbs tests listenAndProcessBulbs with some sample binary messages captured
 // from a Logitech Harmony.
 func TestListenAndProcessBulbs(t *testing.T) {
-       // Fake bulb (non-PWM) with a recording testGPIO. We can only have one bulb, because we’re only
-       // listening on one address and that’s the unique identifier for a bulb. (The MAC address is
-       // ignored.)
+	// Fake bulb (non-PWM) with a recording testGPIO. We can only have one bulb, because we’re only
+	// listening on one address and that’s the unique identifier for a bulb. (The MAC address is
+	// ignored.)
 	testg := &testGPIO{}
 	bulbs := map[string]*bulb{
 		"onoff": &bulb{
@@ -92,21 +92,21 @@ func TestListenAndProcessBulbs(t *testing.T) {
 		},
 	}
 
-       // Start server on a random UDP port in another goroutine.
+	// Start server on a random UDP port in another goroutine.
 	server, cancel, err := listenOnRandomPort(t, bulbs)
 	if err != nil {
 		t.Fatalf("Can't listen on a random port: %v", err)
 	}
 	defer cancel()
 
-       // Connect back.
+	// Connect back.
 	conn, err := net.Dial("udp", server)
 	if err != nil {
 		t.Fatalf("Can't connect back to %q: %v", server, err)
 	}
-       defer conn.Close()
+	defer conn.Close()
 
-       // The tests to be run against the server.
+	// The tests to be run against the server.
 	tests := []struct {
 		name       string
 		req        []byte
@@ -140,7 +140,7 @@ func TestListenAndProcessBulbs(t *testing.T) {
 						"\x00\x00\x00"), // reserved3
 				[]byte( // State packet
 					"\x58\x00" + // length
-                                               "\x00\x14" + // protocol 1024, tagged = 0, addressable = 1,
+						"\x00\x14" + // protocol 1024, tagged = 0, addressable = 1,
 						"\x6c\x6f\x67\x69" + // source identifier
 						"\xbc\x9a\x78\x56\x34\x12\x00\x00" + // target (bulb) address + 0-padding
 						"\x00\x00\x00\x00\x00\x00" + // reserved1
@@ -197,7 +197,7 @@ func TestListenAndProcessBulbs(t *testing.T) {
 		}, {
 			name: "turn on bulb",
 			req: []byte("\x2a\x00" + // length
-                               "\x00\x14" + // protocol 1024, tagged = 0, addressable = 1
+				"\x00\x14" + // protocol 1024, tagged = 0, addressable = 1
 				"\x6c\x6f\x67\x69" + // source identifier
 				"\x02\x90\x78\x45\x34\x12\x00\x00" + // target (bulb) address + 0-padding
 				"\x00\x00\x00\x00\x00\x00" + //reserved1
@@ -210,7 +210,7 @@ func TestListenAndProcessBulbs(t *testing.T) {
 				"\xe8\x03\x00\x00"), // transition time
 			wantResp: [][]byte{[]byte(
 				"\x24\x00" + //length
-                                       "\x00\x14" + //protocol 1024, tagged = 0, addressable = 1
+					"\x00\x14" + //protocol 1024, tagged = 0, addressable = 1
 					"\x6c\x6f\x67\x69" + // source identifier
 					"\xbc\x9a\x78\x56\x34\x12\x00\x00" + // target (bulb) address + 0-padding
 					"\x00\x00\x00\x00\x00\x00" + // reserved1
@@ -224,7 +224,7 @@ func TestListenAndProcessBulbs(t *testing.T) {
 		}, {
 			name: "dim bulb",
 			req: []byte("\x2a\x00" + // length
-                               "\x00\x14" + // protocol 1024, tagged = 0, addressable = 1
+				"\x00\x14" + // protocol 1024, tagged = 0, addressable = 1
 				"\x6c\x6f\x67\x69" + // source identifier
 				"\x02\x90\x78\x45\x34\x12\x00\x00" + // target (bulb) address + 0-padding
 				"\x00\x00\x00\x00\x00\x00" + //reserved1
@@ -237,7 +237,7 @@ func TestListenAndProcessBulbs(t *testing.T) {
 				"\xe8\x03\x00\x00"), // transition time
 			wantResp: [][]byte{[]byte(
 				"\x24\x00" + //length
-                                       "\x00\x14" + //protocol 1024, tagged = 0, addressable = 1
+					"\x00\x14" + //protocol 1024, tagged = 0, addressable = 1
 					"\x6c\x6f\x67\x69" + // source identifier
 					"\xbc\x9a\x78\x56\x34\x12\x00\x00" + // target (bulb) address + 0-padding
 					"\x00\x00\x00\x00\x00\x00" + // reserved1
@@ -253,7 +253,7 @@ func TestListenAndProcessBulbs(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-                       // Send request.
+			// Send request.
 			n, err := conn.Write(tc.req)
 			if err != nil {
 				t.Fatalf("Can't write request to server: %v", err)
@@ -262,7 +262,7 @@ func TestListenAndProcessBulbs(t *testing.T) {
 				t.Fatalf("Write only wrote %d bytes, want %d", n, len(tc.req))
 			}
 
-                       // Check expected responses in order.
+			// Check expected responses in order.
 			for i, want := range tc.wantResp {
 				buf := make([]byte, 1024)
 				n, err := conn.Read(buf)
@@ -276,7 +276,7 @@ func TestListenAndProcessBulbs(t *testing.T) {
 				}
 			}
 
-                       // Check recorded GPIO values.
+			// Check recorded GPIO values.
 			if diff := cmp.Diff(testg.values, tc.wantValues); diff != "" {
 				t.Errorf("gpio.set() called with invalid values (-want +got):\n%s", diff)
 			}

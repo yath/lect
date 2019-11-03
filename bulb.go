@@ -60,7 +60,7 @@ func listenAndProcessBulbs(ctx context.Context, addr string, port int, bulbs map
 				if net.IPv4bcast.Equal(res.cm.Dst) || b.addr.Equal(res.cm.Dst) {
 					found = true
 					if err := b.process(pc, res.src, res.data); err != nil {
-						log.Errorf("error processing packet for bulb %q: %v", id, err)
+						log.Errorf("error processing packet for bulb %q: %w", id, err)
 					}
 				}
 			}
@@ -98,19 +98,19 @@ func (b *bulb) send(pc *ipv4.PacketConn, lh controlifx.LanHeader, dst net.Addr, 
 	if payload != nil {
 		p, err := payload.MarshalBinary()
 		if err != nil {
-			return fmt.Errorf("can't marshal payload: %v", err)
+			return fmt.Errorf("can't marshal payload: %w", err)
 		}
 		msg.Header.Frame.Size += uint16(len(p))
 	}
 	data, err := msg.MarshalBinary()
 	if err != nil {
-		return fmt.Errorf("can't marshal message: %v", err)
+		return fmt.Errorf("can't marshal message: %w", err)
 	}
 
 	cm := &ipv4.ControlMessage{Src: b.addr}
 	n, err := pc.WriteTo(data, cm, dst)
 	if err != nil {
-		return fmt.Errorf("can't send %d bytes to %v (from %v): %v", len(data), dst, b.addr, err)
+		return fmt.Errorf("can't send %d bytes to %v (from %v): %w", len(data), dst, b.addr, err)
 	}
 
 	log.Debugf("[%v] sent %d bytes type %d (payload %T) back: %#v", b, n, t, payload, msg)
@@ -122,7 +122,7 @@ func (b *bulb) send(pc *ipv4.PacketConn, lh controlifx.LanHeader, dst net.Addr, 
 func (b *bulb) process(pc *ipv4.PacketConn, src net.Addr, data []byte) error {
 	msg := implifx.ReceivableLanMessage{}
 	if err := msg.UnmarshalBinary(data); err != nil {
-		return fmt.Errorf("can't unmarshal %d bytes as %T", len(data), msg)
+		return fmt.Errorf("can't unmarshal %d bytes as %T: %w", len(data), msg, err)
 	}
 
 	lh := controlifx.LanHeader{
@@ -139,13 +139,13 @@ func (b *bulb) process(pc *ipv4.PacketConn, src net.Addr, data []byte) error {
 	writer := func(always bool, t uint16, reply encoding.BinaryMarshaler) error {
 		if msg.Header.FrameAddress.AckRequired {
 			if err := b.send(pc, lh, src, controlifx.AcknowledgementType, nil); err != nil {
-				return fmt.Errorf("can't acknowledge frame %v: %v", msg, err)
+				return fmt.Errorf("can't acknowledge frame %v: %w", msg, err)
 			}
 		}
 
 		if always || msg.Header.FrameAddress.ResRequired {
 			if err := b.send(pc, lh, src, t, reply); err != nil {
-				return fmt.Errorf("can't respond to frame %v with %v: %v", msg, reply, err)
+				return fmt.Errorf("can't respond to frame %v with %v: %w", msg, reply, err)
 			}
 		}
 
@@ -153,7 +153,7 @@ func (b *bulb) process(pc *ipv4.PacketConn, src net.Addr, data []byte) error {
 	}
 
 	if err := b.s.handle(msg, writer); err != nil {
-		return fmt.Errorf("can't handle %v: %v", msg, err)
+		return fmt.Errorf("can't handle %v: %w", msg, err)
 	}
 
 	if msg.Header.ProtocolHeader.Type == controlifx.LightSetPowerType {
