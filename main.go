@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -252,6 +253,7 @@ func initGPIOs(gpios []gpio) (func(), error) {
 // main parses flags, reads the config, initializes GPIOs and then runs the listenAndProcessBulbs
 // main loop.
 func main() {
+	ctx := context.Background()
 	flag.Parse()
 
 	conf, err := readConf(*configFile)
@@ -265,7 +267,7 @@ func main() {
 	}
 	defer cleanup()
 
-	if err := listenAndProcessBulbs(*listenAddr, *port, conf.bulbs); err != nil {
+	if err := listenAndProcessBulbs(ctx, *listenAddr, *port, conf.bulbs); err != nil {
 		log.Fatalf("Error while processing: %v", err)
 	}
 }

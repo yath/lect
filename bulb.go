@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding"
 	"fmt"
 	"net"
@@ -13,7 +14,7 @@ import (
 
 // listenAndProcess is the main loop that listens on the specified address and UDP port and invokes
 // each addressed bulb’s process() receiver.
-func listenAndProcessBulbs(addr string, port int, bulbs map[string]*bulb) error {
+func listenAndProcessBulbs(ctx context.Context, addr string, port int, bulbs map[string]*bulb) error {
 	hp := net.JoinHostPort(addr, fmt.Sprintf("%d", port))
 	conn, err := net.ListenPacket("udp", hp)
 	if err != nil {
@@ -22,30 +23,51 @@ func listenAndProcessBulbs(addr string, port int, bulbs map[string]*bulb) error 
 
 	pc := ipv4.NewPacketConn(conn)
 	pc.SetControlMessage(ipv4.FlagDst, true)
+	defer pc.Close()
 
 	log.Infof("listening on %s", hp)
 
-	for {
-		buf := make([]byte, controlifx.MaxReadSize)
-		n, cm, saddr, err := pc.ReadFrom(buf)
-		if err != nil {
-			return fmt.Errorf("can't read: %v", err)
-		}
-		buf = buf[:n]
+	type readResult struct {
+		data []byte
+		cm   *ipv4.ControlMessage
+		src  net.Addr
+		err  error
+	}
 
-		found := false
-		for id, b := range bulbs {
-			if net.IPv4bcast.Equal(cm.Dst) || b.addr.Equal(cm.Dst) {
-				found = true
-				if err := b.process(pc, saddr, buf); err != nil {
-					log.Errorf("error processing packet for bulb %q: %v", id, err)
-				}
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	resc := make(chan readResult)
+	go func() {
+		buf := make([]byte, controlifx.MaxReadSize)
+		for {
+			n, cm, saddr, err := pc.ReadFrom(buf)
+			select {
+			case <-ctx.Done():
+				return
+			case resc <- readResult{buf[:n], cm, saddr, err}:
 			}
 		}
+	}()
 
-		if !found {
-			log.Warningf("%d bytes from %v received for %v, but is neither broadcast nor a bulb", n,
-				saddr, cm.Dst)
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case res := <-resc:
+			found := false
+			for id, b := range bulbs {
+				if net.IPv4bcast.Equal(res.cm.Dst) || b.addr.Equal(res.cm.Dst) {
+					found = true
+					if err := b.process(pc, res.src, res.data); err != nil {
+						log.Errorf("error processing packet for bulb %q: %v", id, err)
+					}
+				}
+			}
+
+			if !found {
+				log.Warningf("%d bytes from %v received for %v, but is neither broadcast nor a bulb", len(res.data), res.src, res.cm.Dst)
+			}
 		}
 	}
 }
