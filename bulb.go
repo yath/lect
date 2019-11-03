@@ -18,7 +18,7 @@ func listenAndProcessBulbs(ctx context.Context, addr string, port int, bulbs map
 	hp := net.JoinHostPort(addr, fmt.Sprintf("%d", port))
 	conn, err := net.ListenPacket("udp", hp)
 	if err != nil {
-		return fmt.Errorf("can't listen: %v", err)
+		return fmt.Errorf("can't listen: %w", err)
 	}
 
 	pc := ipv4.NewPacketConn(conn)
