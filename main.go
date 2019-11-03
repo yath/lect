@@ -128,9 +128,10 @@ func readConf(filename string) (*config, error) {
 			IsPWM      bool
 		}
 		Serial map[string]*struct {
-			InputFIFO string
-			BaudRate  int
-			GPIO      int
+			InputFIFO      string
+			BaudRate       int
+			GPIO           int
+			LowWhenBulbOff bool
 		}
 	}
 	if err := gcfg.ReadFileInto(&c, filename); err != nil {
@@ -204,11 +205,21 @@ func readConf(filename string) (*config, error) {
 			return nil, err
 		}
 
+		c := make(chan uint16, 100)
+		if info.LowWhenBulbOff {
+			bulb, ok := ret.bulbs[id]
+			if !ok {
+				return nil, fmt.Errorf("serial %q set as low when bulb off, but no bulb %q", id, id)
+			}
+			bulb.serial = c
+		}
+
 		ret.serialPorts[id] = &serialPort{
 			id:        id,
 			inputFIFO: info.InputFIFO,
 			baudRate:  info.BaudRate,
 			g:         g,
+			b:         c,
 		}
 
 	}

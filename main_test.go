@@ -115,6 +115,7 @@ func TestReadConf(t *testing.T) {
 			conf, err := readConf(tmpfn)
 			cmpOpts := []cmp.Option{
 				cmp.AllowUnexported(config{}, piGPIO{}, bulb{}, serialPort{}),
+				cmp.Comparer(func(_, _ <-chan uint16) bool { return true }),
 				cmpopts.IgnoreUnexported(bulbState{}),
 			}
 			if diff := cmp.Diff(tc.want, conf, cmpOpts...); diff != "" {

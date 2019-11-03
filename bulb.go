@@ -75,12 +75,13 @@ func listenAndProcessBulbs(ctx context.Context, addr string, port int, bulbs map
 // bulb represents a single emulated bulb and its attributes. It listens on addr and responds to
 // requests to set power state and brightness, calling g.set().
 type bulb struct {
-	id     string     // Subsection in the config, used as identifier in log messages
-	name   string     // Name to announce
-	addr   net.IP     // IP address
-	hwaddr uint64     // 48-bit MAC address
-	g      gpio       // GPIO to toggle
-	s      *bulbState // Bulb state
+	id     string        // Subsection in the config, used as identifier in log messages
+	name   string        // Name to announce
+	addr   net.IP        // IP address
+	hwaddr uint64        // 48-bit MAC address
+	g      gpio          // GPIO to toggle
+	s      *bulbState    // Bulb state
+	serial chan<- uint16 // Serial port subscribed to power state changes for this bulb, or nil.
 }
 
 func (b *bulb) String() string {
@@ -160,6 +161,9 @@ func (b *bulb) process(pc *ipv4.PacketConn, src net.Addr, data []byte) error {
 		p := msg.Payload.(*implifx.LightSetPowerLanMessage)
 		log.Infof("Handling LightSetPower %+v", p)
 		b.g.set(p.Level)
+		if b.serial != nil {
+			b.serial <- p.Level
+		}
 	}
 
 	if msg.Header.ProtocolHeader.Type == controlifx.LightSetColorType && b.g.isPWM() {

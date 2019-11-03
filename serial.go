@@ -15,10 +15,12 @@ import (
 // serialPort represents an emulated serial port that transmits data via a GPIO pin as it read from
 // inputFifo.
 type serialPort struct {
-	id        string // Subsection in the config, used as identifier in log messages
-	inputFIFO string // Named pipe to read from. Will be created by readAndProcess().
-	baudRate  int    // Baud rate
-	g         gpio   // Transmit GPIO.
+	id        string        // Subsection in the config, used as identifier in log messages
+	inputFIFO string        // Named pipe to read from. Will be created by readAndProcess().
+	baudRate  int           // Baud rate
+	g         gpio          // Transmit GPIO.
+	b         <-chan uint16 // Connected bulb, if any.
+	mute      bool          // Whether connected bulb is turned off.
 }
 
 // createFIFO creates a FIFO special file if it does not already exist and returns it opened for reading.
@@ -97,6 +99,19 @@ reopen:
 				}
 				return fmt.Errorf("while reading from %q: %w", s.inputFIFO, err)
 			}
+			if len(s.b) > 0 {
+				s.mute = (<-s.b != gpioMaxVal)
+				log.Infof("set mute = %v", s.mute)
+				if s.mute {
+					s.g.set(0)
+				}
+			}
+
+			if s.mute {
+				log.Infof("%d bytes of input for serial %q ignored because bulb is off.", n, s.id)
+				continue
+			}
+
 			buf = bytes.ReplaceAll(buf[:n], []byte("\n"), []byte("\r\n"))
 			log.Infof("Read %d bytes: %q", n, buf)
 			if err := s.send(ctx, buf); err != nil {
