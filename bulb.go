@@ -39,8 +39,8 @@ func listenAndProcessBulbs(ctx context.Context, addr string, port int, bulbs map
 
 	resc := make(chan readResult)
 	go func() {
-		buf := make([]byte, controlifx.MaxReadSize)
 		for {
+			buf := make([]byte, controlifx.MaxReadSize)
 			n, cm, saddr, err := pc.ReadFrom(buf)
 			select {
 			case <-ctx.Done():
