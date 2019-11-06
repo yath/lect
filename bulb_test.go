@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math/rand"
 	"net"
+	"sync"
 	"testing"
 	"time"
 
@@ -57,6 +58,7 @@ retry:
 // testGPIO is a GPIO for testing that records the values set.
 type testGPIO struct {
 	values []uint16
+	mu     sync.Mutex
 }
 
 // init does nothing.
@@ -66,7 +68,9 @@ func (g *testGPIO) init() error {
 
 // set records the set value to g.values.
 func (g *testGPIO) set(value uint16) {
+	g.mu.Lock()
 	g.values = append(g.values, value)
+	g.mu.Unlock()
 }
 
 // isPWM returns false.
@@ -277,6 +281,8 @@ func TestListenAndProcessBulbs(t *testing.T) {
 			}
 
 			// Check recorded GPIO values.
+			testg.mu.Lock()
+			defer testg.mu.Unlock()
 			if diff := cmp.Diff(testg.values, tc.wantValues); diff != "" {
 				t.Errorf("gpio.set() called with invalid values (-want +got):\n%s", diff)
 			}
