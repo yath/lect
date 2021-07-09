@@ -6,7 +6,10 @@ import (
 	"flag"
 	"fmt"
 	"net"
+	"net/http"
+	"runtime"
 	"sort"
+	"strings"
 
 	rpio "github.com/stianeikeland/go-rpio"
 	"golang.org/x/sync/errgroup"
@@ -19,7 +22,7 @@ var (
 	configFile = flag.String("config_file", "lc.conf", "Path to the configuration file")
 	port       = flag.Int("port", 56700, "UDP port to listen on")
 	listenAddr = flag.String("listen_addr", "0.0.0.0", "IPv4 address to listen on for broadcasts")
-	isPi       = flag.Bool("is_pi", true, "Assume running on a Raspberry Pi. If false, GPIOs will not be used.")
+	isPi       = flag.Bool("is_pi", strings.HasPrefix(runtime.GOARCH, "arm"), "Assume running on a Raspberry Pi. If false, GPIOs will not be used.")
 )
 
 // Logger.
@@ -104,8 +107,77 @@ func (g *piGPIO) set(value uint16) {
 	}
 }
 
+// hassAPI is the HomeAssistant API
+type hassAPI struct {
+	c    *http.Client
+	host string
+	auth string
+}
+
+// newHassAPI returns a new instance of hassAPI.
+func newHassAPI(host, auth string) *hassAPI {
+	return &hassAPI{
+		c:    &http.Client{},
+		host: host,
+		auth: auth,
+	}
+}
+
+// request POSTs the given body at given path on api.host, authorized by api.auth.
+func (api *hassAPI) request(path, body string) error {
+	req, err := http.NewRequest("POST", "http://"+api.host+path, strings.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("can't build request: %w", err)
+	}
+	req.Header.Add("Authorization", "Bearer "+api.auth)
+	req.Header.Add("Content-Type", "text/json")
+
+	resp, err := api.c.Do(req)
+	if err != nil {
+		return fmt.Errorf("can't POST request: %w", err)
+	}
+
+	log.Infof("Post to %v returned status %v", path, resp.Status)
+	if resp.StatusCode != 200 {
+		return fmt.Errorf("POST %v: %v", path, resp.Status)
+	}
+	return nil
+}
+
+// setSwitch sets a switch to the given state.
+func (api *hassAPI) setSwitch(entity string, on bool) error {
+	if api == nil {
+		return nil
+	}
+	if !strings.HasPrefix(entity, "switch") {
+		return errors.New("must use switch.* entities for non-PWM bulbs")
+	}
+
+	method := "turn_off"
+	if on {
+		method = "turn_on"
+	}
+	return api.request("/api/services/switch/"+method, fmt.Sprintf(`{"entity_id": "%s"}`, entity))
+}
+
+// setLight sets the light to the given brightness, where 0 is off, 1 is the lowest brightness and 255
+// is the maximum brightness.
+func (api *hassAPI) setLight(entity string, brightness byte) error {
+	if api == nil {
+		return nil
+	}
+	if !strings.HasPrefix(entity, "light") {
+		return errors.New("must use light.* entities for non-PWM bulbs")
+	}
+
+	// turn_on with brightness 0 seems equivalent to turn_off.
+	return api.request("/api/services/light/turn_on", fmt.Sprintf(`{"entity_id": "%s", "brightness": %d}`, entity, brightness))
+}
+
 // config represents the configurations with all bulbs and serialPorts attached to a gpio.
 type config struct {
+	hassHost    string
+	hassAuth    string
 	bulbs       map[string]*bulb
 	serialPorts map[string]*serialPort
 	allGPIOs    []gpio
@@ -116,16 +188,19 @@ type config struct {
 func readConf(filename string) (*config, error) {
 	var c struct {
 		Flags struct {
-			Port       int
-			ListenAddr string
+			Port              int
+			ListenAddr        string
+			HomeAssistantHost string
+			HomeAssistantAuth string
 		}
 		Bulb map[string]*struct {
-			Name       string
-			IPAddress  string
-			MACAddress string
-			GPIO       int
-			ActiveLow  bool
-			IsPWM      bool
+			Name                string
+			IPAddress           string
+			MACAddress          string
+			GPIO                int
+			ActiveLow           bool
+			IsPWM               bool
+			HomeAssistantEntity string
 		}
 		Serial map[string]*struct {
 			InputFIFO      string
@@ -140,6 +215,11 @@ func readConf(filename string) (*config, error) {
 
 	if len(c.Bulb)+len(c.Serial) == 0 {
 		return nil, errors.New("no bulb or serial port defined")
+	}
+
+	var api *hassAPI
+	if c.Flags.HomeAssistantHost != "" {
+		api = newHassAPI(c.Flags.HomeAssistantHost, c.Flags.HomeAssistantAuth)
 	}
 
 	ret := &config{
@@ -189,12 +269,14 @@ func readConf(filename string) (*config, error) {
 		}
 
 		ret.bulbs[id] = &bulb{
-			id:     id,
-			name:   info.Name,
-			addr:   addr,
-			hwaddr: hwaddrInt,
-			g:      g,
-			s:      newBulbState(info.Name),
+			id:        id,
+			name:      info.Name,
+			addr:      addr,
+			hwaddr:    hwaddrInt,
+			g:         g,
+			s:         newBulbState(info.Name),
+			api:       api,
+			apiEntity: info.HomeAssistantEntity,
 		}
 	}
 

@@ -75,13 +75,15 @@ func listenAndProcessBulbs(ctx context.Context, addr string, port int, bulbs map
 // bulb represents a single emulated bulb and its attributes. It listens on addr and responds to
 // requests to set power state and brightness, calling g.set().
 type bulb struct {
-	id     string        // Subsection in the config, used as identifier in log messages
-	name   string        // Name to announce
-	addr   net.IP        // IP address
-	hwaddr uint64        // 48-bit MAC address
-	g      gpio          // GPIO to toggle
-	s      *bulbState    // Bulb state
-	serial chan<- uint16 // Serial port subscribed to power state changes for this bulb, or nil.
+	id        string        // Subsection in the config, used as identifier in log messages
+	name      string        // Name to announce
+	addr      net.IP        // IP address
+	hwaddr    uint64        // 48-bit MAC address
+	g         gpio          // GPIO to toggle
+	s         *bulbState    // Bulb state
+	serial    chan<- uint16 // Serial port subscribed to power state changes for this bulb, or nil.
+	api       *hassAPI      // HomeAssistant API
+	apiEntity string        // HomeAssistant entity
 }
 
 func (b *bulb) String() string {
@@ -116,6 +118,21 @@ func (b *bulb) send(pc *ipv4.PacketConn, lh controlifx.LanHeader, dst net.Addr, 
 
 	log.Debugf("[%v] sent %d bytes type %d (payload %T) back: %#v", b, n, t, payload, msg)
 	return nil
+}
+
+// setSwitchOrLight calls b.api's setSwitch or setLight function depending on whether it is PWM or not.
+func (b *bulb) setSwitchOrLight(level uint16) {
+	if b.g.isPWM() {
+		l := byte(level >> 8)
+		if err := b.api.setLight(b.apiEntity, l); err != nil {
+			log.Warningf("can't set %s to light level %d: %v", b.apiEntity, l, err)
+		}
+	} else {
+		on := bool(level != 0)
+		if err := b.api.setSwitch(b.apiEntity, on); err != nil {
+			log.Warningf("can't set %s to switch on=%v: %v", b.apiEntity, on, err)
+		}
+	}
 }
 
 // process unmarshals binary data received from a client, prepares a writer (cf. type writer)
@@ -161,6 +178,7 @@ func (b *bulb) process(pc *ipv4.PacketConn, src net.Addr, data []byte) error {
 		p := msg.Payload.(*implifx.LightSetPowerLanMessage)
 		log.Infof("Handling LightSetPower %+v", p)
 		b.g.set(p.Level)
+		b.setSwitchOrLight(p.Level)
 		if b.serial != nil {
 			b.serial <- p.Level
 		}
@@ -170,6 +188,7 @@ func (b *bulb) process(pc *ipv4.PacketConn, src net.Addr, data []byte) error {
 		p := msg.Payload.(*implifx.LightSetColorLanMessage)
 		log.Infof("Handling LightSetColor %+v (HSBK: %+v)", p, p.Color)
 		b.g.set(p.Color.Brightness)
+		b.setSwitchOrLight(p.Color.Brightness)
 	}
 
 	return nil
